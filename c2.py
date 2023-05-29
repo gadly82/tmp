@@ -46,3 +46,48 @@ class RLAgent:
     def load_model(self, path):
         with open(path, "rb") as f:
             self.model = jax.pickle.load(f)
+            
+            
+
+# Training loop
+def train_agent(agent, scenarios, num_episodes, max_steps_per_episode):
+    for episode in range(num_episodes):
+        scenario_idx = episode % len(scenarios)
+        scenario = scenarios[scenario_idx]
+        total_reward = 0
+
+        for step in range(max_steps_per_episode):
+            state = scenario[step]
+            action_probs = agent.predict(state)
+            action = jax.random.choice(jax.random.PRNGKey(0), agent.action_dim, p=action_probs)
+
+            next_state = scenario[step + 1]
+            reward = calculate_reward(state, action, next_state)  # Define your reward function
+
+            total_reward += reward
+
+            agent.train(state, action, reward)
+
+            if step == len(scenario) - 2:  # Last step of the scenario
+                break
+
+        print(f"Episode: {episode+1}, Total Reward: {total_reward}")
+
+
+# Example usage
+action_dim = 2  # Example number of actions
+
+# Create a list of scenarios, each containing a time series of prices and other features
+scenarios = [scenario1, scenario2, scenario3]  # Replace with your actual scenarios
+
+# Create the RL agent
+agent = RLAgent(action_dim)
+
+# Train the agent
+train_agent(agent, scenarios, num_episodes=100, max_steps_per_episode=100)
+
+# Save the trained model
+agent.save_model("trained_model.pickle")
+
+# Load the trained model
+# agent.load_model("trained_model.pickle")
