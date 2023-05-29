@@ -4,6 +4,32 @@ from flax import linen as nn
 from flax.training import train_state
 import optax
 
+# Define the Transformer model
+class Transformer(nn.Module):
+    d_model: int
+    num_heads: int
+    d_ff: int
+
+    def setup(self):
+        self.mha = nn.MultiHeadDotProductAttention(num_heads=self.num_heads)
+        self.dropout1 = nn.Dropout(rate=0.1)
+        self.layer_norm1 = nn.LayerNorm()
+        self.ffn = nn.Dense(features=self.d_ff, kernel_init=nn.initializers.xavier_uniform())
+        self.dropout2 = nn.Dropout(rate=0.1)
+        self.layer_norm2 = nn.LayerNorm()
+
+    def __call__(self, inputs):
+        attention_output = self.mha(inputs, inputs, inputs)
+        attention_output = self.dropout1(attention_output)
+        attention_output = self.layer_norm1(inputs + attention_output)
+
+        ffn_output = self.ffn(attention_output)
+        ffn_output = self.dropout2(ffn_output)
+        ffn_output = self.layer_norm2(attention_output + ffn_output)
+
+        return ffn_output
+
+
 # Define the RL agent
 class RLAgent:
     def __init__(self, state_dim, action_dim, learning_rate=1e-3):
@@ -11,11 +37,7 @@ class RLAgent:
         self.action_dim = action_dim
 
         # Initialize the Transformer model
-        self.model = nn.TransformerBlock(
-            num_heads=4,
-            d_model=128,
-            d_ff=256,
-        )
+        self.model = Transformer(d_model=128, num_heads=4, d_ff=256)
 
         # Initialize the optimizer
         self.optimizer = optax.adam(learning_rate=learning_rate).create(self.model)
