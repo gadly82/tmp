@@ -41,23 +41,23 @@ class Model(nn.Module):
     output_size: int
 
     def setup(self):
-        self.dense1 = nn.Dense(self.hidden_size)
-        self.dense2 = nn.Dense(self.hidden_size)
-        self.dense3 = nn.Dense(self.output_size)
+        self.lstm = nn.LSTMCell(name="lstm")
+        self.dense = nn.Dense(self.output_size)
 
-    def __call__(self, inputs):
-        x = nn.relu(self.dense1(inputs))
-        x = nn.relu(self.dense2(x))
-        return nn.softmax(self.dense3(x))
+    def __call__(self, inputs, hidden_state):
+        lstm_output, new_state = self.lstm(inputs, hidden_state)
+        logits = self.dense(lstm_output)
+        return nn.softmax(logits), new_state
 
 # Define the training loop
 def train(env, model, num_epochs, batch_size, learning_rate):
     optimizer = adam(learning_rate).create(model)
 
     @jax.jit
-    def update(optimizer, inputs, targets):
+    def update(optimizer, inputs, targets, hidden_state):
         def loss_fn(model):
-            logits = model(inputs)
+            lstm_output, _ = model.lstm(inputs, hidden_state)
+            logits = model.dense(lstm_output)
             log_probs = jnp.log(logits)
             return -jnp.mean(jnp.sum(log_probs * targets, axis=1))
 
@@ -66,6 +66,7 @@ def train(env, model, num_epochs, batch_size, learning_rate):
         optimizer = optimizer.apply_gradient(grads)
         return optimizer
 
+    hidden_state = model.lstm.initialize_carry(batch_size)
     for epoch in range(num_epochs):
         epoch_loss = 0.0
 
@@ -84,34 +85,10 @@ def train(env, model, num_epochs, batch_size, learning_rate):
 
             inputs = jnp.stack(inputs)
             targets = jax.nn.one_hot(jnp.stack(targets), env.action_space)
-            optimizer = update(optimizer, inputs, targets)
+            optimizer = update(optimizer, inputs, targets, hidden_state)
             epoch_loss += loss_fn(optimizer.target)
 
         avg_loss = epoch_loss / (len(env.data) // batch_size)
         print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {avg_loss:.6f}")
 
-# Define the main training function
-def main():
-    # Set up the trading environment and parameters
-    data = [...]  # Price data
-    features = [...]  # Additional features
-    initial_balance = 100000.0
-    risk_percentage = 0.01
-    trading_cost = 0.001
-
-    env = TradingEnvironment(data, features, initial_balance)
-    input_shape = env.features[0].shape
-    output_size = env.action_space
-    hidden_size = 256
-
-    # Create the model
-    model = Model(hidden_size, output_size)
-
-    # Train the model
-    num_epochs = 100
-    batch_size = 32
-    learning_rate = 0.001
-    train(env, model, num_epochs, batch_size, learning_rate)
-
-if __name__ == "__main__":
-    main()
+#
