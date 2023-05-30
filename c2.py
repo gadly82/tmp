@@ -1,115 +1,117 @@
 import jax
 import jax.numpy as jnp
+from jax import grad, jit, vmap
 from flax import linen as nn
-from flax.training import train_state
-import optax
+from optax import adam
 
-# Define the Transformer model
-class Transformer(nn.Module):
-    d_model: int
-    num_heads: int
-    d_ff: int
+# Define the trading environment and parameters
+class TradingEnvironment:
+    def __init__(self, data, features, initial_balance):
+        self.data = data
+        self.features = features
+        self.initial_balance = initial_balance
+        self.balance = initial_balance
+        self.position = 0
+
+    def reset(self):
+        self.balance = self.initial_balance
+        self.position = 0
+
+    def step(self, action):
+        price = self.data[self.current_step]
+        feature = self.features[self.current_step]
+        pnl = self.position * (price - self.last_price)
+        risk = abs(self.position) * price * risk_percentage
+        cost = abs(action - self.position) * price * trading_cost
+        reward = pnl - risk - cost
+
+        self.balance += reward
+        self.position = action
+        self.current_step += 1
+
+        return feature, reward, self.current_step == len(self.data)
+
+    @property
+    def last_price(self):
+        return self.data[self.current_step - 1]
+
+# Define the neural network architecture using Flax
+class Model(nn.Module):
+    hidden_size: int
+    output_size: int
 
     def setup(self):
-        self.mha = nn.MultiHeadDotProductAttention(num_heads=self.num_heads)
-        self.dropout1 = nn.Dropout(rate=0.1)
-        self.layer_norm1 = nn.LayerNorm()
-        self.ffn = nn.Dense(features=self.d_ff, kernel_init=nn.initializers.xavier_uniform())
-        self.dropout2 = nn.Dropout(rate=0.1)
-        self.layer_norm2 = nn.LayerNorm()
+        self.dense1 = nn.Dense(self.hidden_size)
+        self.dense2 = nn.Dense(self.hidden_size)
+        self.dense3 = nn.Dense(self.output_size)
 
     def __call__(self, inputs):
-        attention_output = self.mha(inputs, inputs, inputs)
-        attention_output = self.dropout1(attention_output)
-        attention_output = self.layer_norm1(inputs + attention_output)
+        x = nn.relu(self.dense1(inputs))
+        x = nn.relu(self.dense2(x))
+        return nn.softmax(self.dense3(x))
 
-        ffn_output = self.ffn(attention_output)
-        ffn_output = self.dropout2(ffn_output)
-        ffn_output = self.layer_norm2(attention_output + ffn_output)
+# Define the training loop
+def train(env, model, num_epochs, batch_size, learning_rate):
+    optimizer = adam(learning_rate).create(model)
 
-        return ffn_output
+    @jax.jit
+    def update(optimizer, inputs, targets):
+        def loss_fn(model):
+            logits = model(inputs)
+            log_probs = jnp.log(logits)
+            return -jnp.mean(jnp.sum(log_probs * targets, axis=1))
 
+        grad_fn = jax.grad(loss_fn)
+        grads = grad_fn(optimizer.target)
+        optimizer = optimizer.apply_gradient(grads)
+        return optimizer
 
-# Define the RL agent
-class RLAgent:
-    def __init__(self, state_dim, action_dim, learning_rate=1e-3):
-        self.state_dim = state_dim
-        self.action_dim = action_dim
+    for epoch in range(num_epochs):
+        epoch_loss = 0.0
 
-        # Initialize the Transformer model
-        self.model = Transformer(d_model=128, num_heads=4, d_ff=256)
+        for _ in range(len(env.data) // batch_size):
+            inputs = []
+            targets = []
 
-        # Initialize the optimizer
-        self.optimizer = optax.adam(learning_rate=learning_rate).create(self.model)
+            for _ in range(batch_size):
+                action = jax.random.choice(jnp.arange(env.action_space))
+                feature, reward, done = env.step(action)
+                inputs.append(feature)
+                targets.append(action)
 
-    def predict(self, state):
-        # Perform forward pass through the model
-        logits = self.model(jnp.array(state))
-        return jax.nn.softmax(logits)
+                if done:
+                    env.reset()
 
-    def train(self, states, actions, rewards):
-        def loss_fn(params, states, actions, rewards):
-            logits = self.model(jnp.array(states))
-            action_probs = jax.nn.softmax(logits)
-            selected_probs = jnp.sum(action_probs * actions, axis=-1)
-            loss = -jnp.mean(jnp.log(selected_probs) * rewards)
-            return loss
+            inputs = jnp.stack(inputs)
+            targets = jax.nn.one_hot(jnp.stack(targets), env.action_space)
+            optimizer = update(optimizer, inputs, targets)
+            epoch_loss += loss_fn(optimizer.target)
 
-        grad_fn = jax.value_and_grad(loss_fn)
-        loss, grad = grad_fn(self.optimizer.target, states, actions, rewards)
-        updates, new_optimizer_state = self.optimizer.update(grad, self.optimizer.state)
-        self.optimizer = self.optimizer.replace(state=new_optimizer_state)
-        return loss
+        avg_loss = epoch_loss / (len(env.data) // batch_size)
+        print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {avg_loss:.6f}")
 
-    def save_model(self, path):
-        with open(path, "wb") as f:
-            jax.pickle.dump(self.model, f)
+# Define the main training function
+def main():
+    # Set up the trading environment and parameters
+    data = [...]  # Price data
+    features = [...]  # Additional features
+    initial_balance = 100000.0
+    risk_percentage = 0.01
+    trading_cost = 0.001
 
-    def load_model(self, path):
-        with open(path, "rb") as f:
-            self.model = jax.pickle.load(f)
-            
-            
+    env = TradingEnvironment(data, features, initial_balance)
+    input_shape = env.features[0].shape
+    output_size = env.action_space
+    hidden_size = 256
 
-# Training loop
-def train_agent(agent, scenarios, num_episodes, max_steps_per_episode):
-    for episode in range(num_episodes):
-        scenario_idx = episode % len(scenarios)
-        scenario = scenarios[scenario_idx]
-        total_reward = 0
+    # Create the model
+    model = Model(hidden_size, output_size)
 
-        for step in range(max_steps_per_episode):
-            state = scenario[step]
-            action_probs = agent.predict(state)
-            action = jax.random.choice(jax.random.PRNGKey(0), agent.action_dim, p=action_probs)
+    # Train the model
+    num_epochs = 100
+    batch_size = 32
+    learning_rate = 0.001
+    train(env, model, num_epochs, batch_size, learning_rate)
 
-            next_state = scenario[step + 1]
-            reward = calculate_reward(state, action, next_state)  # Define your reward function
-
-            total_reward += reward
-
-            agent.train(state, action, reward)
-
-            if step == len(scenario) - 2:  # Last step of the scenario
-                break
-
-        print(f"Episode: {episode+1}, Total Reward: {total_reward}")
-
-
-# Example usage
-action_dim = 2  # Example number of actions
-
-# Create a list of scenarios, each containing a time series of prices and other features
-scenarios = [scenario1, scenario2, scenario3]  # Replace with your actual scenarios
-
-# Create the RL agent
-agent = RLAgent(action_dim)
-
-# Train the agent
-train_agent(agent, scenarios, num_episodes=100, max_steps_per_episode=100)
-
-# Save the trained model
-agent.save_model("trained_model.pickle")
-
-# Load the trained model
-# agent.load_model("trained_model.pickle")
+if __name__ == "__main__":
+    main()
